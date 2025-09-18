@@ -10,10 +10,10 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use serde::{Deserialize, Serialize};
-use std::io::stdout;
+use std::io::{Write, stdin, stdout};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite::Message};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct MessageData {
@@ -31,29 +31,123 @@ enum AppMode {
     Chat,
 }
 
-#[tokio::main]
-async fn main() {
-    env_logger::init();
+async fn connect_ws(
+    url: &str,
+) -> Option<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>> {
+    match connect_async(url).await {
+        Ok((ws_stream, _)) => Some(ws_stream),
+        Err(_) => None,
+    }
+}
 
-    let server_url = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "ws://127.0.0.1:9001".to_string());
-
-    let (ws_stream, _) = connect_async(&server_url).await.expect("Failed to connect");
-    let (mut ws_sink, mut ws_stream) = ws_stream.split();
-
-    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<MessageData>();
-    let messages = Arc::new(Mutex::new(Vec::new()));
-
+fn spawn_receive_task(
+    mut ws_stream: futures::stream::SplitStream<
+        WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    >,
+    msg_tx: mpsc::UnboundedSender<MessageData>,
+    messages: Arc<Mutex<Vec<MessageData>>>,
+) {
     tokio::spawn(async move {
         while let Some(Ok(msg)) = ws_stream.next().await {
             if let Message::Text(text) = msg {
                 if let Ok(message_data) = serde_json::from_str::<MessageData>(&text) {
-                    msg_tx.send(message_data).unwrap();
+                    let _ = msg_tx.send(message_data);
                 }
             }
         }
+        messages.lock().unwrap().push(MessageData {
+            msg_type: "status".into(),
+            sender: "system".into(),
+            color: "FF0000".into(),
+            content: "Disconnected from server.".into(),
+            room: "".into(),
+            client_count: 0,
+        });
     });
+}
+
+async fn send_or_reconnect(
+    ws_sink: &mut futures::stream::SplitSink<
+        WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        Message,
+    >,
+    msg: &str,
+    tried_reconnect: &mut bool,
+    msg_tx: &mpsc::UnboundedSender<MessageData>,
+    messages: Arc<Mutex<Vec<MessageData>>>,
+    url: &str,
+) -> bool {
+    if ws_sink.send(Message::Text(msg.to_string())).await.is_ok() {
+        return true;
+    }
+
+    if !*tried_reconnect {
+        if let Some(ws) = connect_ws(url).await {
+            let (new_sink, new_stream) = ws.split();
+            *ws_sink = new_sink;
+            *tried_reconnect = true;
+
+            spawn_receive_task(new_stream, msg_tx.clone(), Arc::clone(&messages));
+
+            // let _ = ws_sink.send(Message::Text(msg.to_string())).await;
+            messages.lock().unwrap().push(MessageData {
+                msg_type: "status".into(),
+                sender: "system".into(),
+                color: "00FF00".into(),
+                content: "Reconnected to server.".into(),
+                room: "".into(),
+                client_count: 0,
+            });
+            return true;
+        } else {
+            messages.lock().unwrap().push(MessageData {
+                msg_type: "status".into(),
+                sender: "system".into(),
+                color: "FF0000".into(),
+                content: "Reconnect failed.".into(),
+                room: "".into(),
+                client_count: 0,
+            });
+        }
+    }
+
+    false
+}
+
+#[tokio::main]
+async fn main() {
+    env_logger::init();
+
+    let messages = Arc::new(Mutex::new(Vec::new()));
+
+    let server_url = loop {
+        print!("Enter WebSocket server URL (default ws://127.0.0.1:9001, q to quit): ");
+        stdout().flush().unwrap();
+
+        let mut url = String::new();
+        stdin().read_line(&mut url).unwrap();
+        let url = url.trim();
+        if url.eq_ignore_ascii_case("q") {
+            return;
+        }
+        let url = if url.is_empty() {
+            "ws://127.0.0.1:9001"
+        } else {
+            url
+        };
+
+        if let Some(_) = connect_ws(url).await {
+            break url.to_string();
+        } else {
+            println!("Failed to connect to {}. Try again.", url);
+        }
+    };
+
+    let ws_stream = connect_ws(&server_url).await.unwrap();
+    let (mut ws_sink, ws_stream) = ws_stream.split();
+    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<MessageData>();
+
+    spawn_receive_task(ws_stream, msg_tx.clone(), Arc::clone(&messages));
 
     enable_raw_mode().unwrap();
     let mut stdout = stdout();
@@ -65,8 +159,8 @@ async fn main() {
     let mut input = String::new();
     let mut current_room = "general".to_string();
     let mut scroll: usize = 0;
-
     let mut client_count = 0;
+    let mut tried_reconnect = false;
 
     loop {
         let size = terminal.size().unwrap();
@@ -160,33 +254,51 @@ async fn main() {
 
                         match mode {
                             AppMode::Nickname => {
-                                let nickname = msg.trim().to_string();
-                                ws_sink.send(Message::Text(nickname.clone())).await.unwrap();
+                                let _ = send_or_reconnect(
+                                    &mut ws_sink,
+                                    &msg,
+                                    &mut tried_reconnect,
+                                    &msg_tx,
+                                    Arc::clone(&messages),
+                                    &server_url,
+                                )
+                                .await;
                                 mode = AppMode::Color;
                             }
                             AppMode::Color => {
-                                let color = msg.trim().to_string();
-                                ws_sink.send(Message::Text(color.clone())).await.unwrap();
+                                let _ = send_or_reconnect(
+                                    &mut ws_sink,
+                                    &msg,
+                                    &mut tried_reconnect,
+                                    &msg_tx,
+                                    Arc::clone(&messages),
+                                    &server_url,
+                                )
+                                .await;
                                 mode = AppMode::Chat;
                             }
                             AppMode::Chat => {
-                                match msg.trim() {
-                                    "/quit" => break,
-                                    "/clear" => {
-                                        messages.lock().unwrap().clear();
-                                        continue;
-                                    }
-                                    _ => {}
-                                }
-
-                                if msg.starts_with("/join ") {
+                                if msg == "/quit" {
+                                    break;
+                                } else if msg == "/clear" {
+                                    messages.lock().unwrap().clear();
+                                    continue;
+                                } else if msg.starts_with("/join ") {
                                     let parts: Vec<&str> = msg.split_whitespace().collect();
                                     if parts.len() >= 2 {
                                         current_room = parts[1].to_string();
                                     }
                                 }
 
-                                ws_sink.send(Message::Text(msg)).await.unwrap();
+                                let _ = send_or_reconnect(
+                                    &mut ws_sink,
+                                    &msg,
+                                    &mut tried_reconnect,
+                                    &msg_tx,
+                                    Arc::clone(&messages),
+                                    &server_url,
+                                )
+                                .await;
                             }
                         }
                     }
