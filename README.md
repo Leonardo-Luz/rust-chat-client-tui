@@ -36,7 +36,7 @@ Before you begin, ensure you have the following installed:
 
 2.  **Build the client:**
 
-    * You should add .cargo/bin to your PATH
+    * You should add `.cargo/bin` to your PATH
 
     ```bash
     cargo install --path .
