@@ -104,7 +104,7 @@ async fn send_or_reconnect(
                 msg_type: "status".into(),
                 sender: "system".into(),
                 color: "FF0000".into(),
-                content: "Reconnect failed.".into(),
+                content: format!("Failed to connect to {}. Try again.", url).into(),
                 room: "".into(),
                 client_count: 0,
             });
@@ -120,7 +120,7 @@ async fn main() {
 
     let messages = Arc::new(Mutex::new(Vec::new()));
 
-    let server_url = loop {
+    let mut server_url = loop {
         print!("Enter WebSocket server URL (default ws://127.0.0.1:9001, q to quit): ");
         stdout().flush().unwrap();
 
@@ -247,7 +247,7 @@ async fn main() {
                         input.pop();
                     }
                     KeyCode::Enter => {
-                        let msg = input.drain(..).collect::<String>();
+                        let mut msg = input.drain(..).collect::<String>();
                         if msg.trim().is_empty() {
                             continue;
                         }
@@ -287,6 +287,52 @@ async fn main() {
                                     let parts: Vec<&str> = msg.split_whitespace().collect();
                                     if parts.len() >= 2 {
                                         current_room = parts[1].to_string();
+                                    }
+                                } else if msg.starts_with("/color ") {
+                                    if let Some(index) = msg.find('#') {
+                                        msg.remove(index);
+                                    }
+                                } else if msg.starts_with("/server ") {
+                                    let parts: Vec<&str> = msg.split_whitespace().collect();
+                                    if parts.len() >= 2 {
+                                        server_url = parts[1].to_string();
+
+                                        let _ = ws_sink.send(Message::Close(None)).await;
+
+                                        if let Some(ws) = connect_ws(&server_url).await {
+                                            let (new_sink, new_stream) = ws.split();
+                                            ws_sink = new_sink;
+
+                                            spawn_receive_task(
+                                                new_stream,
+                                                msg_tx.clone(),
+                                                Arc::clone(&messages),
+                                            );
+
+                                            messages.lock().unwrap().push(MessageData {
+                                                msg_type: "status".into(),
+                                                sender: "system".into(),
+                                                color: "00FF00".into(),
+                                                content: format!("Connected to {}.", server_url)
+                                                    .into(),
+                                                room: "".into(),
+                                                client_count: 0,
+                                            });
+                                        } else {
+                                            messages.lock().unwrap().push(MessageData {
+                                                msg_type: "status".into(),
+                                                sender: "system".into(),
+                                                color: "FF0000".into(),
+                                                content: format!(
+                                                    "Failed to connect to {}. Try again.",
+                                                    server_url
+                                                )
+                                                .into(),
+                                                room: "".into(),
+                                                client_count: 0,
+                                            });
+                                        }
+                                        continue;
                                     }
                                 }
 
