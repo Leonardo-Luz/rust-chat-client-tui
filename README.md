@@ -14,6 +14,8 @@ A terminal-based chat client written in Rust, designed to interact with the WebS
     *   `/quit`: Exit the chat client.
     *   `/clear`: Clear the chat history.
     *   `/join <room_name> [password]`: Join a specified chat room.
+    *   `/color <rrggbb>`: Change nickname color.
+    *   `/server <new_server_url>`: Change current server.
 
 ## Prerequisites
 
@@ -26,31 +28,27 @@ Before you begin, ensure you have the following installed:
 ## Installation
 
 1.  **Clone the repository:**
+
     ```bash
-    git clone https://github.com/leonardo-luz/chat-client.git
-    cd chat-client
+    git clone https://github.com/leonardo-luz/rust-chat-client-tui.git
+    cd rust-chat-client-tui
     ```
 
 2.  **Build the client:**
+
+    * You should add .cargo/bin to your PATH
+
     ```bash
-    cargo build
+    cargo install --path .
     ```
 
 ## Usage
 
-To run the chat client, you need to provide the WebSocket server's URL as an argument.
-
 ```bash
-cargo run <websocket_server_url>
+chat-client
 ```
 
-**Example:**
-
-If your WebSocket server is running locally on `ws://127.0.0.1:9001`:
-
-```bash
-cargo run
-```
+Or just use `cargo run` if not installed
 
 ### In-App Interaction
 
@@ -58,7 +56,9 @@ cargo run
 2.  **Color:** Next, enter a 6-digit hexadecimal color code (e.g., `FF0000` for red) for your messages.
 3.  **Chat:** You can now send messages.
     *   Type your message and press `Enter` to send.
-    *   Use `/join <room_name>` to switch rooms.
+    *   Use `/join <room_name> [password]` to switch rooms.
+    *   Use `/color <rrggbb>` to change nickname color.
+    *   Use `/server <new_server_url>` to switch servers.
     *   Use `Up` and `Down` arrow keys to scroll through messages.
     *   Press `Esc` or `Ctrl+C` to quit.
 
